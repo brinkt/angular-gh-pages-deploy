@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+
+# deploys dev angular build to Github Pages
+
+#-----------------------------------------------------------------------------#
+# removes files & folders tracked by git
+
+gitRemove() {
+  i="${PWD}/${1}"
+
+  # if directory, delete recursively
+  if [ -d "$i" ]; then
+    git rm -r "$i"
+  else
+    # check if file exists, then delete
+    if [ -e "$i" ]; then
+      git rm "$i"
+    fi
+  fi
+}
+
+#-----------------------------------------------------------------------------#
+# removes files from previous deployment; before re-adding
+
+cleanGhPagesBranch() {
+  while read -r line; do
+    if [ "$line" != ".gitignore" ] && [ "$line" != "CNAME" ]; then
+      r=`gitRemove "${line}"`
+    fi
+  done <<< "$(git ls-files)"
+}
+
+#-----------------------------------------------------------------------------#
+# checks if ghbranch exists within git branches
+
+ghPagesBranchExist() {
+  if [ "$ghbranch" != "" ]; then
+    while read -r line; do
+      line=`echo $line | sed -e "s/^[*[:blank:]]*//" -e "s/[*[:blank:]]*$//"`
+      if [ "$line" == "$ghbranch" ]; then
+        echo -e "$line"
+      fi
+    done <<< "$(git branch)"
+  else
+    echo -e "Error: 'ghbranch' not provided.\n" >&2
+    kill -HUP $$;
+  fi
+}
+
+#-----------------------------------------------------------------------------#
+# creates the ghbranch if it does not yet exist
+
+createBranchIfNecessary() {
+  if [ "$(ghPagesBranchExist)" == "" ]; then
+    echo -e "Branch '$ghbranch' not found. Creating.." >&2
+    git checkout --orphan ${ghbranch}
+    git rm --cached -r .
+    git add .gitignore
+    git clean -f -d
+    git commit -m "initial ${ghbranch} commit"
+  fi
+}
+
+#-----------------------------------------------------------------------------#
+
+echo -e "\nGithub Pages deployment starting.."
+
+# github pages branch name
+ghbranch="gh-pages"
+
+# starting branch name
+branchorigin=`git rev-parse --abbrev-ref HEAD | sed -e "s/[:blank:]*//"`
+
+# check for pending changes
+if [ "$(git status --porcelain | sed -n '/[:alnum:]*/p')" != "" ]; then
+  echo -e "Error: Please commit all changes before deploying. Exiting.\n"
+  exit 1
+fi
+
+# build app to /tmp directory
+tempdir=`cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1`
+
+# project name
+projectname=`git remote -v | head -n1 | awk '{print $2}' | sed 's/.*\///' | sed 's/\.git//'`
+
+# formerly: -bh "/$projectname/"
+ng build -prod -op "/tmp/$tempdir"
+
+createBranchIfNecessary
+git checkout ${ghbranch}
+cleanGhPagesBranch
+
+# copy from build directory
+cp -r "/tmp/$tempdir/"* $PWD/
+
+# add, commit, deploy branch
+status=`git status | sed -n '/nothing to commit, working directory clean/p'`
+if [ "$status" == "" ]; then
+  git add .
+  git commit -m "new ${ghbranch} version"
+  git push origin ${ghbranch}
+fi
+
+# clean up
+rm -r "/tmp/$tempdir"
+git checkout ${branchorigin}
+
+echo -e "\nFinished."
